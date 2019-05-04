@@ -1,0 +1,122 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+Resources:
+  DockerTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+        - Image: 394493744367.dkr.ecr.us-east-1.amazonaws.com/python-task-test-5second-sleep:latest
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref DockerTaskLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: logs
+          Name: 0
+          Environment: []
+      Cpu: 1024
+      ExecutionRoleArn: !GetAtt DockerTaskExecutionRole.Arn
+      Memory: 2048
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      TaskRoleArn: !GetAtt DockerTaskTaskRole.Arn
+      Volumes: []
+    DependsOn: DockerTaskLogGroup
+  DockerTaskLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /stackery/task/${AWS::StackName}-DockerTask/logs
+  DockerTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-DockerTask-execution
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          Effect: Allow
+          Principal:
+            Service: ecs-tasks.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DownloadDockerImagesFromECR
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:*:*:log-group:/stackery/task/${AWS::StackName}-*
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: '*'
+  DockerTaskTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-DockerTask-task
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          Effect: Allow
+          Principal:
+            Service: ecs-tasks.amazonaws.com
+          Action: sts:AssumeRole
+  runTask:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-runTask
+      Description: !Sub
+        - Stack ${StackTagName} Environment ${EnvironmentTagName} Function ${ResourceName}
+        - ResourceName: runTask
+      CodeUri: src/runTask
+      Handler: handler.handler
+      Runtime: python3.6
+      MemorySize: 512
+      Timeout: 59
+      Tracing: Active
+      Policies:
+        - AWSXrayWriteOnlyAccess
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ecs:RunTask
+                - ecs:DescribeTasks
+                - ecs:StopTask
+              Resource:
+                - !Ref DockerTask
+                - !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task/*
+        - Statement:
+            - Effect: Allow
+              Action:
+                - iam:PassRole
+              Resource:
+                - !GetAtt DockerTaskExecutionRole.Arn
+                - !GetAtt DockerTaskTaskRole.Arn
+      Environment:
+        Variables:
+          DOCKER_TASK_ARN: !Ref DockerTask
+          DOCKER_TASK_SUBNETS: !Join
+            - ','
+            - !Ref DefaultVPCSubnets
+      Events:
+        Timer:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+    Metadata:
+      StackeryName: runTask
+Parameters:
+  StackTagName:
+    Type: String
+    Description: Stack Name (injected by Stackery at deployment time)
+  EnvironmentTagName:
+    Type: String
+    Description: Environment Name (injected by Stackery at deployment time)
+  DefaultVPCSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: AWS account-specific default VPC subnets (injected by Stackery at deployment time)
